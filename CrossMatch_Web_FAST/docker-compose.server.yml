@@ -1,0 +1,72 @@
+# Linux VM + Docker Engine: server deployment variant. NOT for Docker Desktop on Windows Server.
+# Raw backend is NOT published to the host; HTTPS proxy is the only exposed port.
+# Provision organization-approved server.crt/server.key under ./certificates/ BEFORE using it.
+# Set CROSSMATCH_HTTPS_BIND_IP to an APPROVED private interface IP in a private .env.
+# Certificates/ and database/ are bind-mounted persistent host folders, NOT committed to Git.
+# Never run `docker compose down -v` or Docker volume-prune during an update.
+name: crossmatch_browser_server
+services:
+  web:
+    build: .
+    init: true
+    restart: unless-stopped
+    environment:
+      CROSSMATCH_CACHE_ROOT: /app/cache
+      CROSSMATCH_AUTH_DB_ROOT: /app/database
+      CROSSMATCH_COOKIE_SECURE: '1'
+      CROSSMATCH_SETUP_KEY: ${CROSSMATCH_SETUP_KEY:-}
+      TMPDIR: /app/cache
+      CACHE_EXPIRATION_HOURS: ${CACHE_EXPIRATION_HOURS:-12}
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-1}
+      MAX_UPLOAD_GB: ${MAX_UPLOAD_GB:-25}
+      AUTH_SESSION_HOURS: ${AUTH_SESSION_HOURS:-12}
+      CROSSMATCH_CPU_WORKERS: ${CROSSMATCH_CPU_WORKERS:-0}
+      CROSSMATCH_RESERVE_WEB_CPU: ${CROSSMATCH_RESERVE_WEB_CPU:-1}
+      CROSSMATCH_BACKGROUND_NICE: ${CROSSMATCH_BACKGROUND_NICE:-1}
+      CROSSMATCH_MEMORY_PERCENT: ${CROSSMATCH_MEMORY_PERCENT:-80}
+      CROSSMATCH_FAST_EXCEL: ${CROSSMATCH_FAST_EXCEL:-1}
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+      MALLOC_ARENA_MAX: '2'
+    volumes:
+    - crossmatch_fast_temp:/app/cache
+    - ./database:/app/database
+    shm_size: 512m
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/selftest',timeout=5)); raise
+        SystemExit(0 if d['ok'] else 1)
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 15s
+    stop_grace_period: 120s
+  proxy:
+    build: ./nginx
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+    - ./certificates:/etc/nginx/certs
+    ports:
+    - ${CROSSMATCH_HTTPS_BIND_IP:-127.0.0.1}:${CROSSMATCH_HTTPS_PORT:-18444}:443
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --no-check-certificate
+      - --quiet
+      - --output-document=/dev/null
+      - https://127.0.0.1/api/health
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 10s
+volumes:
+  crossmatch_fast_temp: null
